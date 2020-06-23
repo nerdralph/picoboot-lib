@@ -24,7 +24,6 @@
 
 #define loTemp r2
 #define Command r16
-#define Temp r17
 #define txData r18
 #define pgLen r19
 #define SpmArg r20
@@ -39,27 +38,27 @@
 .section .init1
     rcall BootLoader
 
-/*
+#ifdef BUILD_MAIN
 .section .text
-.weak main
+.global main
 main:
     sbi DDRB, LEDPIN
     sbi PINB, LEDPIN
     rcall BootLoader
     rjmp main
-*/
+#endif
 
 .section .bootloader,"ax"
 ; for devices with up to 8kB flash
 ; use -Wl,--section-start=.bootloader=0x1F00
 BootLoader:
     sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
-    sbi UART_PORT, UART_Tx              ; pullup tx
-    sbi UART_DDR, UART_Tx
-    ;sbi UART_DDR, UART_Tx               ; pulldown tx
+    ;sbi UART_PORT, UART_Tx              ; pullup tx
 
-    clr XL
-    clr XH
+    clr delayArg
+    rcall Delay3Cycle                   ; wait 768 cycles for pullup
+    sbis UART_PIN, UART_Rx              ; external pulldown disables bootloader
+    rjmp StartApp
 
     ; wait for start bit of first message
     ldi YL, 70                          ; 70 * 2^16 =~ 4s @8Mhz
@@ -69,7 +68,6 @@ WaitStart:
     sbis UART_PIN, UART_Rx
     rjmp CommandLoop
     brcc WaitStart
-JStartApp:
     rjmp StartApp                       ; bootloader timout
 
 CommandLoop:
@@ -80,18 +78,6 @@ CommandLoop:
 1:  rcall Delay3Cycle
     dec YL
     brne 1b
-
-forever:
-    ;rjmp forever                        ; for debug
-    ;rcall RxByte                        ; read command
-    ;ldi txData, 0x55
-    ;rcall TxByte
-    ;cbi UART_PORT, UART_Tx              ; start bit
-    ;ldi delayArg, TXDELAY
-    ;rcall TxDelay
-    ;sbi UART_PORT, UART_Tx              ; start bit
-
-    ;rjmp CommandLoop
 
     ; reply OK
     ldi txData, STK_OK
@@ -220,11 +206,11 @@ DoSPM:
 ; I bit in SREG used as first byte flag 
 PBTxByte:
     brid TxByte
-    mov r2, txData
+    mov loTemp, txData
     ldi txData, STK_INSYNC
     rcall TxByte
     cli
-    mov txData, r2
+    mov txData, loTemp
 ; transmit byte contained in txData
 .global TxByte
 TxByte:
