@@ -1,7 +1,6 @@
 MCU     ?= attiny85 
-SPEED   ?= 8000000L 
 CC      = avr-gcc
-OPTIONS = -Os -flto -mmcu=$(MCU) -DF_CPU=$(SPEED) -Wl,--section-start=.bootloader=0x1F00
+OPTIONS = -Os -flto -mmcu=$(MCU) -DBUILD_MAIN -Wl,--section-start=.bootloader=0x1F00
 TARGET  = pb-lib
 
 $(TARGET): *.[cS]
