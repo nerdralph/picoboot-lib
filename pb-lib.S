@@ -32,6 +32,10 @@
 #define rxData r25
 #define rxWord r24
 
+#ifndef SPMEN
+#define SPMEN SELFPRGEN
+#endif
+
 .section .version
 .equiv picoboot_version, 256*0 + 1
 
