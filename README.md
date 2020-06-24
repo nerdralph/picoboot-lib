@@ -1,5 +1,5 @@
 # picoboot-lib
-picoboot Arduino library
+picoboot Arduino library - a serial bootloader using only 256 bytes of flash.
 
 picoboot-lib is based on [picobootArduino](https://github.com/nerdralph/picoboot/tree/master/arduino), modified for tiny AVRs without hardward bootloader support.  The bootloader uses a busy-loop timeout defaulting to 4 seconds, so there is no impact on the watchdog timer and MCUSR.
 
