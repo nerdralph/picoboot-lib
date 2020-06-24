@@ -229,7 +229,7 @@ TxDelay:
 Delay3Cycle:
     dec delayArg
     brne Delay3Cycle
-#ifndef CLOCK_SLOW
+#ifndef CLOCKSLOW
     ; 2 cycle tweak for best 57.6 timing @ 8Mhz
     rjmp .
 #endif

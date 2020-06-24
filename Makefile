@@ -1,6 +1,6 @@
 MCU     ?= attiny85 
 CC      = avr-gcc
-OPTIONS = -Os -flto -mmcu=$(MCU) -DBUILD_MAIN -Wl,--section-start=.bootloader=0x1F00
+OPTIONS = -mmcu=$(MCU) -DBUILD_MAIN -Wl,--section-start=.bootloader=0x1F00
 TARGET  = pb-lib
 
 $(TARGET): *.[cS]
