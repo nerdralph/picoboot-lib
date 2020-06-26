@@ -77,8 +77,8 @@ Timeout:
 CommandLoop:
     ; ignore the rest of STK500 message
     ; longest msg is SET_DEVICE at 22 bytes; wait at least that long
-    ; at 8Mhz and 57.6kbps, wait 31,000 cycles
-    ldi YL, 41                          ; 41 * 768 = 38488
+    ; at 8Mhz and 57.6kbps, wait >30,588 cycles
+    ldi YL, 41                          ; 41 * 768 = 31488
 1:  rcall Delay3Cycle
     dec YL
     brne 1b
@@ -123,7 +123,8 @@ Quit:
     cpi Command, STK_LEAVE_PROGMODE
     brne ProgPage
     ldi txData, STK_OK
-    rcall PBTxByte 
+    rcall PBTxByte
+    pop r0 $ pop r0                     ; return address unused
     cbi UART_PORT, UART_Rx              ; turn off rx pullup
     rjmp __vectors                      ; restart
 
@@ -155,22 +156,19 @@ ReadPage:
     rcall GetPageParams
     ; read both flash and EE, but only send memtype that was requested
     ; reduces code to one loop instead of two 
-ReadByte:
+ReadMem:
     out EEARL, ZL
-#ifdef EEARH
-    out EEARH, ZH
-#endif
-    lpm txData, Z+
+    out EEARL+1, ZH
+    lpm txData, Z+                      ; read flash
 ReadEEPROM:
     cpi rxData, 'E'                     ; check for memtype EEPROM
     brne SendByte
-ReadEEByte:
     sbi EECR, EERE
-    in txData, EEDR
+    in txData, EEDR                     ; read EEPROM
 SendByte:
     rcall PBTxByte
     dec pgLen
-    brne ReadByte
+    brne ReadMem
 
 Default:
     rjmp CommandLoop
