@@ -1,14 +1,6 @@
 /* STK500 constants list, from AVRDUDE */
 #define STK_OK              0x10
-#define STK_FAILED          0x11  // Not used
-#define STK_UNKNOWN         0x12  // Not used
-#define STK_NODEVICE        0x13  // Not used
 #define STK_INSYNC          0x14  // ' '
-#define STK_NOSYNC          0x15  // Not used
-#define ADC_CHANNEL_ERROR   0x16  // Not used
-#define ADC_MEASURE_OK      0x17  // Not used
-#define PWM_CHANNEL_ERROR   0x18  // Not used
-#define PWM_ADJUST_OK       0x19  // Not used
 #define CRC_EOP             0x20  // 'SPACE'
 #define STK_GET_SYNC        0x30  // '0'
 #define STK_GET_SIGN_ON     0x31  // '1'
