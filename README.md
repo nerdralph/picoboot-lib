@@ -3,6 +3,8 @@ picoboot Arduino library - a serial bootloader using only 256 bytes of flash.  T
 
 picoboot-lib is based on [picobootArduino](https://github.com/nerdralph/picoboot/tree/master/arduino), modified for tiny AVRs without hardward bootloader support.  The bootloader uses a busy-loop timeout defaulting to 4 seconds, so there is no impact on the watchdog timer and MCUSR.
 
+To ensure reliable, high-speed serial communication, automatic OSCCAL tuning is included.  The first time the host communicates to the bootloader, OSCCAL is adjusted based on the timing of the incoming serial data.  The tuned OSCCAL value is saved in the bootloader flash space, and is used every subsequent time the bootloader runs.
+
 ## Installation
 With a usbasp programmer connected to an attiny85, run 'make flash'.  For a different AVR, set MCU, such as 'MCU=attiny84 make flash'.
 
