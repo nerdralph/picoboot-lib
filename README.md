@@ -9,7 +9,7 @@ To ensure reliable, high-speed serial communication, automatic OSCCAL tuning is 
 With a usbasp programmer connected to an attiny85, run 'make flash'.  For a different AVR, set MCU, such as 'MCU=attiny84 make flash'.
 
 ## Configuration
-PB0 is used for transmit, and PB1 is used for receive.  Change UART_Tx and UART_Rx in pb-lib.S to use different GPIOs.  The serial baud rate is fixed at 0.0072x the MCU clock rate, which is 57.6kbps for 8Mhz. Building with -DCLOCKSLOW will slow the timing by 1.5%.
+PB0 is used for transmit, and PB1 is used for receive.  Change UART_Tx and UART_Rx in pb-lib.S to use different GPIOs.  The serial baud rate is fixed at 0.0072x the MCU clock rate, which is 57.6kbps for 8Mhz.  Building with -DCLOCKSLOW will slow the timing by 1.5%.
 
 ## Use
 After installing picoboot-lib in the Arduino/libraries folder, choose "Include Library", "picoboot-lib", from the "Sketch" menu.  The boards.txt must have upload.protocol set to "arduino", and upload.speed must be set to 57600.
@@ -17,4 +17,5 @@ After installing picoboot-lib in the Arduino/libraries folder, choose "Include L
 To use picoboot-lib's half-duplex UART functions, call pb_txbyte() to transmit 1 byte, and pb_rxbyte() to receive 1 byte.  The receive function is blocking.  The frame format is 8N1.
 
 ## Development plan
-The next release of picoboot-lib will allow calling the internal TxByte and RxByte UART functions.
+A future release will include size-optimized Serial.print() functions using picoboot-lib's UART transmit function.  It should be possible to re-use much of the code from [debugSerial](https://github.com/nerdralph/debugSerial).
+
