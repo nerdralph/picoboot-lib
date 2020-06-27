@@ -1,7 +1,7 @@
-MCU     ?= attiny85 
+MCU     ?= attiny85
 CC      = avr-gcc
-OPTIONS = -mmcu=$(MCU) -DBUILD_MAIN -Wl,--section-start=.bootloader=0x1F00
-TARGET  = pb-lib
+OPTIONS = -mmcu=$(MCU) -nostartfiles -Wl,--section-start=.bootloader=0x1F00
+TARGET  = pblib-$(MCU).elf
 
 $(TARGET): *.[cS]
 	$(CC) $(OPTIONS) $^ -o $@

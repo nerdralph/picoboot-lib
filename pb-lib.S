@@ -5,17 +5,15 @@
 
  * 20200615 v0.1 prototype
  * 20200624 v0.2 first working version
+ * 20200624 v0.3 with OSCCAL autotune 
  */
-
-/* needed for <avr/io.h> to give io constant addresses */
-#define __SFR_OFFSET 0 
 
 #include <avr/io.h>
 
 #define LEDPIN 4
 
 /* UART defines */
-#define UART_PORT PORTB
+#define UART_PORT (PORTB - 0x20)
 #define UART_DDR (UART_PORT - 1)
 #define UART_PIN (UART_PORT - 2)
 #define UART_Tx 0
@@ -23,7 +21,6 @@
 
 #include "stk500.h"
 
-#define loTemp r2
 #define Command r16
 #define txData r18
 #define pgLen r19
@@ -37,33 +34,70 @@
 #endif
 
 .section .version
-.equiv picoboot_version, 256*0 + 1
+.equiv picoboot_version, 256*0 + 3
 
-; run bootloader before main
-.section .init1
-    rcall BootLoader
-
-#ifdef BUILD_MAIN
 .section .text
-.global main
-main:
-    sbi DDRB, LEDPIN
-    sbi PINB, LEDPIN
-    rcall BootLoader
-    rjmp main
-#endif
+__vectors:
+    sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
+    clr delayArg
+    rcall Delay3Cycle                   ; wait 768 cycles for pullup
+
+    sbi UART_DDR, LEDPIN
+    sbi UART_PIN, LEDPIN
+    rcall Tune0x30
+    rcall ReadWord                      ; ignore rest of GET_SYNC msg
+    rcall Tune0x30
+
+; now write tuned OSCCAL value (saved in r17) to 0xFF
+    ldi ZL, 0xFF
+    ldi ZH, 0xFF
+    movw r0, ZL
+    ldi ZL, 0 - SPM_PAGESIZE
+    ldi SpmArg, (1<<SPMEN)              ; fill page buffer
+Fill0xFF:
+    rcall DoSPM
+    adiw ZL, 2                          ; increment Z pointer
+    cpi ZL, 0xFE
+    brne Fill0xFF 
+    mov r1, r17                         ; r17 = OSCCAL
+    rcall DoSPM
+    ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
+    rcall DoSPM                         ; write OSCCAL to 0xFFFF
+    rjmp CommandLoop                    ; enter bootloader
+
+; adjust OSCCAL based on timing of STK_GET_SYNC(0x30) command
+; low period is 5 bits * 138.89 cycles = 694.4 cycles
+; count loop is 4 cycles, so ideal count = 173.6 (694.4 / 4)
+Tune0x30:
+    sbic UART_PIN, UART_Rx
+    rjmp Tune0x30                       ; wait for start bit
+    clr r16
+count:
+    inc r16
+    sbis UART_PIN, UART_Rx              ; wait for rx hi
+    rjmp count
+    lsr r16                             ; count /= 2 
+    subi r16, 174 / 2                   ; r16 = delta from ideal timing
+    lds r17, OSCCAL
+    sub r17, r16
+    sts OSCCAL, r17                     ; adjust OSCCAL
+    ret
 
 .section .bootloader,"ax"
 ; for devices with up to 8kB flash
 ; use -Wl,--section-start=.bootloader=0x1F00
 BootLoader:
     sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
+    ;clr delayArg
+    ;rcall Delay3Cycle                   ; wait 768 cycles for pullup
 
-    clr delayArg
-    rcall Delay3Cycle                   ; wait 768 cycles for pullup
+    ldi ZL, 0xFF
+    ldi ZH, 0xFF
+    lpm r0, Z
+    sts OSCCAL, r17                     ; set OSCCAL to tuned value
 
     ; wait for start bit of first message
-    ldi YL, 70                          ; 70 * 2^16 =~ 4s @8Mhz
+    ldi YL, 70                          ; 70 * 2^16 * 7c =~ 4s @8Mhz
 WaitStart:
     sbiw ZL, 1
     sbci YL, 0
@@ -129,12 +163,13 @@ Quit:
     rjmp __vectors                      ; restart
 
 ; todo: add eeprom write support
+; could be rewritten to eliminiate Z rollback?
 ProgPage:
     cpi Command, STK_PROG_PAGE
     brne ReadPage
     rcall GetPageParams
-    cpi rxData, 'F'                     ; check for memtype flash
-    brne Default                        ; only flash supported
+    ;cpi rxData, 'F'                     ; check for memtype flash
+    ;brne Default                        ; only flash supported
 PageFill:
     rcall ReadWord
     movw r0, rxWord                     ; data in r1:r0
@@ -157,13 +192,13 @@ ReadPage:
     ; read both flash and EE, but only send memtype that was requested
     ; reduces code to one loop instead of two 
 ReadMem:
-    out EEARL, ZL
-    out EEARL+1, ZH
+    out EEARL - 0x20, ZL
+    out EEARL - 0x20 + 1, ZH
     lpm txData, Z+                      ; read flash
 ReadEEPROM:
     cpi rxData, 'E'                     ; check for memtype EEPROM
     brne SendByte
-    sbi EECR, EERE
+    sbi EECR - 0x20, EERE
     in txData, EEDR                     ; read EEPROM
 SendByte:
     rcall PBTxByte
@@ -186,7 +221,7 @@ ReadWord:                               ; read word into rxWord
     rjmp RxByte                         ; rxWord hi
 
 DoSPM:
-    out SPMCSR, SpmArg
+    out SPMCSR - 0x20, SpmArg
     spm
     ret
 
@@ -202,11 +237,11 @@ DoSPM:
 ; I bit in SREG used as first byte flag 
 PBTxByte:
     brid TxByte
-    mov loTemp, txData
+    push txData
     ldi txData, STK_INSYNC
     rcall TxByte
     cli
-    mov txData, loTemp
+    pop txData
 ; transmit byte contained in txData
 .global TxByte
 TxByte:
@@ -256,4 +291,6 @@ RxBit:
     ori rxData, 0x80
     brcc RxBit
     ret
+
+.byte 0x70, 0xFF                        ; 'p' = picoboot-lib signature
 
