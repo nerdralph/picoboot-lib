@@ -5,7 +5,8 @@
 
  * 20200615 v0.1 prototype
  * 20200624 v0.2 first working version
- * 20200624 v0.3 with OSCCAL autotune 
+ * 20200627 v0.3 with OSCCAL autotune 
+ * 20200627 v0.4 optimize autotune, expose RxByte and TxByte
  */
 
 #include <avr/io.h>
@@ -21,16 +22,23 @@
 
 #include "stk500.h"
 
-#define Command r16
+#define command r16
+#define pgLen r17
 #define txData r18
-#define pgLen r19
+#define delayArg r19
 #define SpmArg r20
-#define delayArg r22
-#define rxData r25
-#define rxWord r24
+#define rxWord r22
+#define rxData r23
 
 #ifndef SPMEN
 #define SPMEN SELFPRGEN
+#endif
+
+#ifndef CLOCKSLOW
+    ; 2 cycle tweak for best 57.6 timing @ 8Mhz
+#define DELAYADJUST rjmp .
+#else
+#define DELAYADJUST
 #endif
 
 .section .version
@@ -48,21 +56,33 @@ __vectors:
     rcall ReadWord                      ; ignore rest of GET_SYNC msg
     rcall Tune0x30
 
-; now write tuned OSCCAL value (saved in r17) to 0xFF
-    ldi ZL, 0xFF
+; now save tuned OSCCAL value (saved in r17) to bootloader
+    ldi r22, 0xFF
+    ldi r23, 0xFF
+    movw r0, r22                        ; 0xFFFF does not modify flash
+    ldi ZL, 0                           ; bootloader starts at 0xFF00
     ldi ZH, 0xFF
-    movw r0, ZL
-    ldi ZL, 0 - SPM_PAGESIZE
     ldi SpmArg, (1<<SPMEN)              ; fill page buffer
-Fill0xFF:
     rcall DoSPM
     adiw ZL, 2                          ; increment Z pointer
-    cpi ZL, 0xFE
-    brne Fill0xFF 
-    mov r1, r17                         ; r17 = OSCCAL
+    ; second bootloader instruction is ldi r16, osccal
+    ; opcode = 1110 KKKK dddd KKKK
+    push r17
+    ori r17, 0xF0
+    mov r0, r17                         ; lo byte of ldi instruction
+    pop r17 
+    swap r17
+    ori r17, 0xF0
+    mov r1, r17                         ; hi byte of ldi instruction
     rcall DoSPM
+    movw r0, r22
+Fill0xFF:
+    adiw ZL, 2                          ; increment Z pointer
+    rcall DoSPM
+    cpi ZL, SPM_PAGESIZE - 2
+    brne Fill0xFF 
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
-    rcall DoSPM                         ; write OSCCAL to 0xFFFF
+    rcall DoSPM                         ; write page
     rjmp CommandLoop                    ; enter bootloader
 
 ; adjust OSCCAL based on timing of STK_GET_SYNC(0x30) command
@@ -91,10 +111,9 @@ BootLoader:
     ;clr delayArg
     ;rcall Delay3Cycle                   ; wait 768 cycles for pullup
 
-    ldi ZL, 0xFF
-    ldi ZH, 0xFF
-    lpm r0, Z
-    sts OSCCAL, r0                      ; set OSCCAL to tuned value
+SetOsc:
+    ldi r16, 0xFF                       ; 0xFF modified by tuner
+    sts OSCCAL, r16                     ; set OSCCAL to tuned value
 
     ; wait for start bit of first message
     ldi YL, 70                          ; 70 * 2^16 * 7c =~ 4s @8Mhz
@@ -123,10 +142,10 @@ CommandLoop:
 
 ; start of new message from programmer
     rcall RxByte                        ; read command
-    mov Command, rxData
-    sei                                 ; flag to tx STK_INSYNC
+    mov command, rxData
+    clt                                 ; flag to tx STK_INSYNC
 
-    cpi Command, STK_LOAD_ADDRESS
+    cpi command, STK_LOAD_ADDRESS
     brne Universal
     rcall ReadWord
     movw ZL, rxWord                     ; Z stores address for page load
@@ -134,17 +153,17 @@ CommandLoop:
     rol ZH                              ; convert from word to byte address
 
 Universal:
-    cpi Command, STK_UNIVERSAL
+    cpi command, STK_UNIVERSAL
     breq 1f                             ; dummy reply
 GetParam:
-    cpi Command, STK_GET_PARAMETER
+    cpi command, STK_GET_PARAMETER
     brne ReadSig
     ; command ignored - send dummy 0x00 for Universal/Version Param
 1:  ldi txData, 0
     rcall PBTxByte
 
 ReadSig:
-    cpi Command, STK_READ_SIGN
+    cpi command, STK_READ_SIGN
     brne Quit
     ldi txData, SIGNATURE_0
     rcall PBTxByte
@@ -154,7 +173,7 @@ ReadSig:
     rcall PBTxByte
 
 Quit:
-    cpi Command, STK_LEAVE_PROGMODE
+    cpi command, STK_LEAVE_PROGMODE
     brne ProgPage
     ldi txData, STK_OK
     rcall PBTxByte
@@ -165,7 +184,7 @@ Quit:
 ; todo: add eeprom write support
 ; could be rewritten to eliminiate Z rollback?
 ProgPage:
-    cpi Command, STK_PROG_PAGE
+    cpi command, STK_PROG_PAGE
     brne ReadPage
     rcall GetPageParams
     ;cpi rxData, 'F'                     ; check for memtype flash
@@ -186,7 +205,7 @@ PageFill:
     rcall DoSPM
 
 ReadPage:
-    cpi Command, STK_READ_PAGE
+    cpi command, STK_READ_PAGE
     brne Default 
     rcall GetPageParams
     ; read both flash and EE, but only send memtype that was requested
@@ -215,7 +234,7 @@ GetPageParams:
     mov pgLen, rxWord                   ; block size
     ret
 
-ReadWord:                               ; read word into rxWord
+ReadWord:                               ; read 2 bytes into rxWord
     rcall RxByte
     mov rxWord, rxData                  ; rxWord lo
     rjmp RxByte                         ; rxWord hi
@@ -227,24 +246,44 @@ DoSPM:
 
 
 /* half-duplex bit-bang UART code */
-
 /* fixed timings for 57.6@8M/115.2@16M = 138.9 cycles/bit */
 .equ TXDELAY, 41
 .equ RXSTART, 64
 .equ RXDELAY, 41
 
+; receive byte into rxData
+.global RxByte
+RxByte:
+    sbis UART_PIN, UART_Rx              ; wait for idle
+    rjmp RxByte
+    cli
+1:  sbic UART_PIN, UART_Rx              ; wait for start edge
+    rjmp 1b
+    ldi rxData, 0x80                    ; bit shift counter
+    ldi delayArg, RXSTART               ; 1.5 bit delay
+RxBit:
+    ; 7 cycle loop + ldi/delay = 7 + 7 + 3*DelayArg
+    rcall Delay3Cycle                   ; delay and clear carry
+    rjmp .                              ; 2-cycle delay to match TxByte
+    ldi delayArg, RXDELAY 
+    lsr rxData
+    sbic UART_PIN, UART_Rx              ; sample rx bit
+    ori rxData, 0x80
+    brcc RxBit
+    reti
+
 ; transmit STK_INSYNC if first byte in message
-; I bit in SREG used as first byte flag 
+; T bit in SREG used as first byte flag when clear
 PBTxByte:
-    brid TxByte
+    brts TxByte
     push txData
     ldi txData, STK_INSYNC
     rcall TxByte
-    cli
     pop txData
 ; transmit byte contained in txData
 .global TxByte
 TxByte:
+    cli
     cbi UART_PORT, UART_Tx              ; disable pullup
     sbi UART_DDR, UART_Tx               ; start bit
     in r0, UART_PORT
@@ -259,6 +298,7 @@ TxLoop:
     out UART_PORT, r0
     brne TxLoop
     cbi UART_DDR, UART_Tx               ; set to input pullup mode
+    sei
     ; fall into delay for stop bit
 TxDelay:
     ldi delayArg, TXDELAY
@@ -266,31 +306,8 @@ TxDelay:
 Delay3Cycle:
     dec delayArg
     brne Delay3Cycle
-#ifndef CLOCKSLOW
-    ; 2 cycle tweak for best 57.6 timing @ 8Mhz
-    rjmp .
-#endif
+    DELAYADJUST
     ret
 
-; receive byte into rxData
-.global RxByte
-RxByte:
-    sbis UART_PIN, UART_Rx              ; wait for idle
-    rjmp RxByte
-1:  sbic UART_PIN, UART_Rx              ; wait for start edge
-    rjmp 1b
-    ldi rxData, 0x80                    ; bit shift counter
-    ldi delayArg, RXSTART               ; 1.5 bit delay
-RxBit:
-    ; 7 cycle loop + ldi/delay = 7 + 7 + 3*DelayArg
-    rcall Delay3Cycle                   ; delay and clear carry
-    rjmp .                              ; 2-cycle delay to match TxByte
-    ldi delayArg, RXDELAY 
-    lsr rxData
-    sbic UART_PIN, UART_Rx              ; sample rx bit
-    ori rxData, 0x80
-    brcc RxBit
-    ret
-
-.byte 0x70, 0xFF                        ; 'p' = picoboot-lib signature
+.byte 'p', 'b'                          ; 'pb' = picoboot-lib signature
 
