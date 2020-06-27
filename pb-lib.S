@@ -94,7 +94,7 @@ BootLoader:
     ldi ZL, 0xFF
     ldi ZH, 0xFF
     lpm r0, Z
-    sts OSCCAL, r17                     ; set OSCCAL to tuned value
+    sts OSCCAL, r0                      ; set OSCCAL to tuned value
 
     ; wait for start bit of first message
     ldi YL, 70                          ; 70 * 2^16 * 7c =~ 4s @8Mhz
