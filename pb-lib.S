@@ -199,7 +199,7 @@ ReadEEPROM:
     cpi rxData, 'E'                     ; check for memtype EEPROM
     brne SendByte
     sbi EECR - 0x20, EERE
-    in txData, EEDR                     ; read EEPROM
+    in txData, EEDR - 0x20              ; read EEPROM
 SendByte:
     rcall PBTxByte
     dec pgLen
