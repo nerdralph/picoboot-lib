@@ -14,5 +14,7 @@ PB0 is used for transmit, and PB1 is used for receive.  Change UART_Tx and UART_
 ## Use
 After installing picoboot-lib in the Arduino/libraries folder, choose "Include Library", "picoboot-lib", from the "Sketch" menu.  The boards.txt must have upload.protocol set to "arduino", and upload.speed must be set to 57600.
 
+To use picoboot-lib's half-duplex UART functions, call pb_txbyte() to transmit 1 byte, and pb_rxbyte() to receive 1 byte.  The receive function is blocking.  The frame format is 8N1.
+
 ## Development plan
 The next release of picoboot-lib will allow calling the internal TxByte and RxByte UART functions.
