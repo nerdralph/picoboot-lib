@@ -7,6 +7,7 @@
  * 20200624 v0.2 first working version
  * 20200627 v0.3 with OSCCAL autotune 
  * 20200627 v0.4 optimize autotune, expose RxByte and TxByte
+ * 20200628 v0.5 match with custom pcrt.S
  */
 
 #include <avr/io.h>
@@ -35,14 +36,14 @@
 #endif
 
 #ifndef CLOCKSLOW
-    ; 2 cycle tweak for best 57.6 timing @ 8Mhz
+; 2 cycle tweak for best 57.6 timing @ 8Mhz
 #define DELAYADJUST rjmp .
 #else
 #define DELAYADJUST
 #endif
 
 .section .version
-.equiv picoboot_version, 256*0 + 3
+.equiv picoboot_version, 256*0 + 5
 
 .section .text
 __vectors:
@@ -123,7 +124,8 @@ WaitStart:
     sbis UART_PIN, UART_Rx
     rjmp CommandLoop
     brcc WaitStart
-Timeout:
+    ; timeout waiting for start bit - return from pb
+Return:
     cbi UART_PORT, UART_Rx              ; turn off rx pullup
     ret
 
@@ -136,9 +138,8 @@ CommandLoop:
     dec YL
     brne 1b
 
-    ; reply OK
-    ldi txData, STK_OK
-    rcall PBTxByte 
+    ; STK_OK marks end of bootloader reply message 
+    rcall TxSTK_OK
 
 ; start of new message from programmer
     rcall RxByte                        ; read command
@@ -175,11 +176,9 @@ ReadSig:
 Quit:
     cpi command, STK_LEAVE_PROGMODE
     brne ProgPage
-    ldi txData, STK_OK
-    rcall PBTxByte
-    pop r0 $ pop r0                     ; return address unused
-    cbi UART_PORT, UART_Rx              ; turn off rx pullup
-    rjmp __vectors                      ; restart
+    rcall TxSTK_OK
+    cbi UART_PORT, UART_Tx              ; disable Tx pullup
+    rjmp Return
 
 ; todo: add eeprom write support
 ; could be rewritten to eliminiate Z rollback?
@@ -272,6 +271,8 @@ RxBit:
     brcc RxBit
     reti
 
+TxSTK_OK:
+    ldi txData, STK_OK
 ; transmit STK_INSYNC if first byte in message
 ; T bit in SREG used as first byte flag when clear
 PBTxByte:
