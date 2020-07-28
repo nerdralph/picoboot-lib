@@ -76,7 +76,7 @@ __vectors:
     ori r17, 0xF0
     mov r1, r17                         ; hi byte of ldi instruction
     rcall DoSPM
-    movw r0, r22
+    movw r0, r22                        ; 0xFFFF
 Fill0xFF:
     adiw ZL, 2                          ; increment Z pointer
     rcall DoSPM
@@ -196,10 +196,24 @@ PageFill:
     adiw ZL, 2                          ; increment Z pointer
     subi pgLen, 2
     brne PageFill
-    sbiw ZL, 2                          ; roll Z back
-    ; erase then write page
+    ;sbiw ZL, 2                          ; roll Z back
+    subi ZL, SPM_PAGESIZE
+    sbci ZH, 0
+    sbiw ZL, 0                          ; writing to 0x0000?
+    brne WritePage
+    ; erase all pages before bootloader, highest first
+    .equ LAST_USER_PAGE, (FLASHEND - 255 - SPM_PAGESIZE)
+    ldi ZL, lo8(LAST_USER_PAGE)
+    ldi ZH, hi8(LAST_USER_PAGE)
+ErasePage:
     ldi SpmArg, (1<<PGERS)|(1<<SPMEN)
     rcall DoSPM
+    ; can the next 3 lines be refactored/shared with code above?
+    subi ZL, SPM_PAGESIZE
+    sbci ZH, 0
+    sbiw ZL, 0                          ; writing to 0x0000?
+    brne ErasePage
+WritePage:
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
     rcall DoSPM
 
@@ -210,14 +224,17 @@ ReadPage:
     ; read both flash and EE, but only send memtype that was requested
     ; reduces code to one loop instead of two 
 ReadMem:
+#ifdef BUILD_EE_READ
     out EEARL - 0x20, ZL
     out EEARL - 0x20 + 1, ZH
     lpm txData, Z+                      ; read flash
-ReadEEPROM:
     cpi rxData, 'E'                     ; check for memtype EEPROM
     brne SendByte
     sbi EECR - 0x20, EERE
     in txData, EEDR - 0x20              ; read EEPROM
+#else
+    lpm txData, Z+                      ; read flash
+#endif
 SendByte:
     rcall PBTxByte
     dec pgLen
