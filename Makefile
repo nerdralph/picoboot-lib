@@ -10,7 +10,7 @@ $(TARGET): *.[cS]
 
 PROGRAMMER ?= usbasp -B 4
 flash:  $(TARGET)
-	avrdude -C /etc/avrdude.conf -p $(DEVICE) -c $(PROGRAMMER) -U flash:w:$(TARGET):e
+	avrdude -C /etc/avrdude.conf -p $(MCU) -c $(PROGRAMMER) -U flash:w:$(TARGET):e
 
 .PHONY: $(TARGET)
 
