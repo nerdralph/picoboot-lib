@@ -8,6 +8,7 @@
  * 20200627 v0.3 with OSCCAL autotune 
  * 20200627 v0.4 optimize autotune, expose RxByte and TxByte
  * 20200628 v0.5 match with custom pcrt.S
+ * 20200927 v0.6 bulk erase flash, remove EE read
  */
 
 #include <avr/io.h>
@@ -28,6 +29,7 @@
 #define txData r18
 #define delayArg r19
 #define SpmArg r20
+#define hiTmp r21
 #define rxWord r22
 #define rxData r23
 
@@ -43,7 +45,7 @@
 #endif
 
 .section .version
-.equiv picoboot_version, 256*0 + 5
+.equiv picoboot_version, 256*0 + 6
 
 .section .text
 __vectors:
@@ -53,8 +55,11 @@ __vectors:
 
     sbi UART_DDR, LEDPIN
     sbi UART_PIN, LEDPIN
+Retry:
     rcall Tune0x30
     rcall ReadWord                      ; ignore rest of GET_SYNC msg
+    tst r17
+    breq Retry
     rcall Tune0x30
 
 ; now save tuned OSCCAL value (saved in r17) to bootloader
@@ -63,11 +68,12 @@ __vectors:
     movw r0, r22                        ; 0xFFFF does not modify flash
     ldi ZL, 0                           ; bootloader starts at 0xFF00
     ldi ZH, 0xFF
-    ldi SpmArg, (1<<SPMEN)              ; fill page buffer
-    rcall DoSPM
-    adiw ZL, 2                          ; increment Z pointer
-    ; second bootloader instruction is ldi r16, osccal
+    ;ldi SpmArg, (1<<SPMEN)              ; fill page buffer
+    ;rcall DoSPM
+    ;adiw ZL, 2                          ; increment Z pointer
+    ; 1st bootloader instruction is ldi rd, osccal
     ; opcode = 1110 KKKK dddd KKKK
+    ; tuned OSCCAL value was saved in r17
     push r17
     ori r17, 0xF0
     mov r0, r17                         ; lo byte of ldi instruction
@@ -75,6 +81,7 @@ __vectors:
     swap r17
     ori r17, 0xF0
     mov r1, r17                         ; hi byte of ldi instruction
+    ldi SpmArg, (1<<SPMEN)              ; fill page buffer
     rcall DoSPM
     movw r0, r22                        ; 0xFFFF
 Fill0xFF:
@@ -89,6 +96,7 @@ Fill0xFF:
 ; adjust OSCCAL based on timing of STK_GET_SYNC(0x30) command
 ; low period is 5 bits * 138.89 cycles = 694.4 cycles
 ; count loop is 4 cycles, so ideal count = 173.6 (694.4 / 4)
+; adjusted OSCCAL returned in r17, 0 = tuning failed
 Tune0x30:
     sbic UART_PIN, UART_Rx
     rjmp Tune0x30                       ; wait for start bit
@@ -97,6 +105,16 @@ count:
     inc r16
     sbis UART_PIN, UART_Rx              ; wait for rx hi
     rjmp count
+    ; does the timing roughly match STK_GET_SYNC +/- 10%?
+    mov hiTmp, r16
+    subi hiTmp, 174
+    sbrc hiTmp, 7                       ; hiTmp = abs(hiTmp)
+    neg hiTmp
+    cpi hiTmp, 18
+    brlt inRange                        ; within +- 10%
+    clr r17                             ; failed
+    ret
+inRange:
     lsr r16                             ; count /= 2 
     subi r16, 174 / 2                   ; r16 = delta from ideal timing
     lds r17, OSCCAL
@@ -108,13 +126,11 @@ count:
 ; for devices with up to 8kB flash
 ; use -Wl,--section-start=.bootloader=0x1F00
 BootLoader:
-    sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
-    ;clr delayArg
-    ;rcall Delay3Cycle                   ; wait 768 cycles for pullup
+    ldi delayArg, 0xFF                  ; 0xFF modified by tuner
+    sts OSCCAL, delayArg                ; set OSCCAL to tuned value
 
-SetOsc:
-    ldi r16, 0xFF                       ; 0xFF modified by tuner
-    sts OSCCAL, r16                     ; set OSCCAL to tuned value
+    sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
+    rcall Delay3Cycle                   ; wait for pullup and OSCCAL
 
     ; wait for start bit of first message
     ldi YL, 70                          ; 70 * 2^16 * 7c =~ 4s @8Mhz
@@ -181,7 +197,8 @@ Quit:
     rjmp Return
 
 ; todo: add eeprom write support
-; could be rewritten to eliminiate Z rollback?
+; try breq DoProgPage, fall through to ReadPage
+; adiw ZL, 2 before PageFill loop
 ProgPage:
     cpi command, STK_PROG_PAGE
     brne ReadPage
@@ -193,26 +210,24 @@ PageFill:
     movw r0, rxWord                     ; data in r1:r0
     ldi SpmArg, (1<<SPMEN)              ; fill page buffer
     rcall DoSPM
-    adiw ZL, 2                          ; increment Z pointer
+    adiw ZL, 2                          ; increment Z one word
     subi pgLen, 2
     brne PageFill
-    ;sbiw ZL, 2                          ; roll Z back
-    subi ZL, SPM_PAGESIZE
-    sbci ZH, 0
-    sbiw ZL, 0                          ; writing to 0x0000?
-    brne WritePage
-    ; erase all pages before bootloader, highest first
+    ; roll back Z in 2 steps since sbiw max is 63
+    sbiw ZL, 32
+    sbiw ZL, (SPM_PAGESIZE - 32)
+    brne WritePage                      ; not writing first page 
     .equ LAST_USER_PAGE, (FLASHEND - 255 - SPM_PAGESIZE)
     ldi ZL, lo8(LAST_USER_PAGE)
     ldi ZH, hi8(LAST_USER_PAGE)
+    ; erase all pages before bootloader, highest first
 ErasePage:
     ldi SpmArg, (1<<PGERS)|(1<<SPMEN)
     rcall DoSPM
     ; can the next 3 lines be refactored/shared with code above?
-    subi ZL, SPM_PAGESIZE
-    sbci ZH, 0
-    sbiw ZL, 0                          ; writing to 0x0000?
-    brne ErasePage
+    sbiw ZL, 32
+    sbiw ZL, (SPM_PAGESIZE - 32)
+    brne ErasePage                      ; done when we reach page 0
 WritePage:
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
     rcall DoSPM
