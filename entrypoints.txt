@@ -1,0 +1,3 @@
+Rx/Tx locations from nm
+RxByte = 0x1FCC == -0x34 == 0 - 52
+TxByte = 0x1FD6 == -0x2A == 0 - 42
