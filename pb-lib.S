@@ -8,7 +8,8 @@
  * 20200627 v0.3 with OSCCAL autotune 
  * 20200627 v0.4 optimize autotune, expose RxByte and TxByte
  * 20200628 v0.5 match with custom pcrt.S
- * 20200927 v0.6 bulk erase flash, remove EE read
+ * 20200727 v0.6 bulk erase flash, remove EE read
+ * 20200803 v0.7 implement virtual reset vector
  */
 
 #include <avr/io.h>
@@ -32,6 +33,8 @@
 #define hiTmp r21
 #define rxWord r22
 #define rxData r23
+#define rstSavLo r24
+#define rstSavHi r25
 
 #ifndef SPMEN
 #define SPMEN SELFPRGEN
@@ -45,7 +48,7 @@
 #endif
 
 .section .version
-.equiv picoboot_version, 256*0 + 6
+.equiv picoboot_version, 256*0 + 7
 
 .section .text
 __vectors:
@@ -54,7 +57,7 @@ __vectors:
     rcall Delay3Cycle                   ; wait 768 cycles for pullup
 
     sbi UART_DDR, LEDPIN
-    sbi UART_PIN, LEDPIN
+    sbi UART_PORT, LEDPIN
 Retry:
     rcall Tune0x30
     rcall ReadWord                      ; ignore rest of GET_SYNC msg
@@ -65,9 +68,8 @@ Retry:
 ; now save tuned OSCCAL value (saved in r17) to bootloader
     ldi r22, 0xFF
     ldi r23, 0xFF
-    movw r0, r22                        ; 0xFFFF does not modify flash
-    ldi ZL, 0                           ; bootloader starts at 0xFF00
-    ldi ZH, 0xFF
+    ldi ZL, (BOOTADDR & 0xFF)           ; bootloader start address
+    ldi ZH, (BOOTADDR >> 8)
     ;ldi SpmArg, (1<<SPMEN)              ; fill page buffer
     ;rcall DoSPM
     ;adiw ZL, 2                          ; increment Z pointer
@@ -83,15 +85,20 @@ Retry:
     mov r1, r17                         ; hi byte of ldi instruction
     ldi SpmArg, (1<<SPMEN)              ; fill page buffer
     rcall DoSPM
-    movw r0, r22                        ; 0xFFFF
+    movw r0, r22                        ; 0xFFFF does not modify flash
 Fill0xFF:
     adiw ZL, 2                          ; increment Z pointer
     rcall DoSPM
-    cpi ZL, SPM_PAGESIZE - 2
+    cpi ZL, (BOOTADDR & 0xFF) + SPM_PAGESIZE - 2
     brne Fill0xFF 
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
     rcall DoSPM                         ; write page
-    rjmp CommandLoop                    ; enter bootloader
+    cbi UART_PORT, LEDPIN
+    ; tuning done so erase tuner (0x0000 - 0x0080)
+    clr ZH 
+    ldi ZL, 0x80
+    ldi command, STK_UNIVERSAL
+    rjmp ChipErase                      ; enter bootloader
 
 ; adjust OSCCAL based on timing of STK_GET_SYNC(0x30) command
 ; low period is 5 bits * 138.89 cycles = 694.4 cycles
@@ -131,6 +138,7 @@ BootLoader:
 
     sbi UART_PORT, UART_Rx              ; pullup rx for noise immunity
     rcall Delay3Cycle                   ; wait for pullup and OSCCAL
+    clr rstSavHi
 
     ; wait for start bit of first message
     ldi YL, 70                          ; 70 * 2^16 * 7c =~ 4s @8Mhz
@@ -141,9 +149,9 @@ WaitStart:
     rjmp CommandLoop
     brcc WaitStart
     ; timeout waiting for start bit - return from pb
-Return:
+StartApp:
     cbi UART_PORT, UART_Rx              ; turn off rx pullup
-    ret
+    rjmp __vectors + BOOTADDR - 2
 
 CommandLoop:
     ; ignore the rest of STK500 message
@@ -154,6 +162,7 @@ CommandLoop:
     dec YL
     brne 1b
 
+CommandFast:                            ; skip delay
     ; STK_OK marks end of bootloader reply message 
     rcall TxSTK_OK
 
@@ -171,13 +180,27 @@ CommandLoop:
 
 Universal:
     cpi command, STK_UNIVERSAL
-    breq 1f                             ; dummy reply
+    brne GetParam
+    rcall ReadWord
+    cpi rxData, 0x80                    ; check for chip erase cmd
+    brne 1f
+    .equ LAST_USER_PAGE, (BOOTADDR - SPM_PAGESIZE)
+    ldi ZL, lo8(LAST_USER_PAGE)
+    ldi ZH, hi8(LAST_USER_PAGE)
+    ; erase all pages before bootloader, highest first
+ChipErase:
+    ldi SpmArg, (1<<PGERS)|(1<<SPMEN)
+    rcall DoSPM
+    subi ZL, SPM_PAGESIZE
+    sbci ZH, 0
+    brcc ChipErase                      ; done after page 0 erased
+    rjmp 1f                             ; dummy reply
 GetParam:
     cpi command, STK_GET_PARAMETER
     brne ReadSig
     ; command ignored - send dummy 0x00 for Universal/Version Param
-1:  ldi txData, 0
-    rcall PBTxByte
+    ; txData should already be 0 from last tx
+1:    rcall PBTxByte
 
 ReadSig:
     cpi command, STK_READ_SIGN
@@ -194,11 +217,9 @@ Quit:
     brne ProgPage
     rcall TxSTK_OK
     cbi UART_PORT, UART_Tx              ; disable Tx pullup
-    rjmp Return
+    rjmp StartApp
 
 ; todo: add eeprom write support
-; try breq DoProgPage, fall through to ReadPage
-; adiw ZL, 2 before PageFill loop
 ProgPage:
     cpi command, STK_PROG_PAGE
     brne ReadPage
@@ -207,31 +228,43 @@ ProgPage:
     ;brne Default                        ; only flash supported
 PageFill:
     rcall ReadWord
+    sbiw ZL, 0
+    brne 2f                             ; not reset vector
+    movw rstSavLo, rxWord
+    ; rjmp = 1100 kkkk kkkk kkkk, k = 12-bit relative word address
+    ; bit 12 of BOOTADDR is set, so it works as an offset from 0x0000
+    ldi rxData, 0xC0 + ((BOOTADDR / 2) >> 8)
+    ldi rxWord, ((BOOTADDR - 2) / 2) & 0xFF
+;1:  cpi ZL, EE_RDY_vect_num * 2         ; check for EE_RDY vector
+    ;cpc ZH, YL                          ; YL contains 0    
+    ;brne 2f                             ; not EE_RDY
+    ;sbiw r26, EE_RDY_vect_num           ; adjust original rjmp offset
+    ;andi r27, 0xEF                      ; mask underflow into 13th bit
+    ;movw rxWord, r26                    ; adjusted reset vector
+2:
     movw r0, rxWord                     ; data in r1:r0
-    ldi SpmArg, (1<<SPMEN)              ; fill page buffer
-    rcall DoSPM
+    rcall DoSPMEN                       ; fill page buffer
     adiw ZL, 2                          ; increment Z one word
     subi pgLen, 2
     brne PageFill
-    ; roll back Z in 2 steps since sbiw max is 63
-    sbiw ZL, 32
-    sbiw ZL, (SPM_PAGESIZE - 32)
-    brne WritePage                      ; not writing first page 
-    .equ LAST_USER_PAGE, (FLASHEND - 255 - SPM_PAGESIZE)
-    ldi ZL, lo8(LAST_USER_PAGE)
-    ldi ZH, hi8(LAST_USER_PAGE)
-    ; erase all pages before bootloader, highest first
-ErasePage:
-    ldi SpmArg, (1<<PGERS)|(1<<SPMEN)
-    rcall DoSPM
-    ; can the next 3 lines be refactored/shared with code above?
-    sbiw ZL, 32
-    sbiw ZL, (SPM_PAGESIZE - 32)
-    brne ErasePage                      ; done when we reach page 0
-WritePage:
+    subi ZL, SPM_PAGESIZE               ; roll back Z 
+    sbci ZH, 0
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
     rcall DoSPM
-
+    ; if page == 0, save reset vector in last user page
+    brne CommandFast
+    ldi ZL, (BOOTADDR - 2) & 0xFF
+    ldi ZH, (BOOTADDR - 2) >> 8
+    .equ vResetOffset, (BOOTADDR - 2) / 2
+    subi rstSavLo, vResetOffset & 0xFF
+    sbci rstSavHi, vResetOffset >> 8
+    andi rstSavHi, 0x0F                 ; mask underflow out of 12th bit
+    ori rstSavHi, 0xC0                  ; rjmp instruction
+    movw r0, rstSavLo
+    rcall DoSPMEN                       ; fill page buffer
+    ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
+    rcall DoSPM
+    
 ReadPage:
     cpi command, STK_READ_PAGE
     brne Default 
@@ -239,7 +272,6 @@ ReadPage:
     ; read both flash and EE, but only send memtype that was requested
     ; reduces code to one loop instead of two 
 ReadMem:
-#ifdef BUILD_EE_READ
     out EEARL - 0x20, ZL
     out EEARL - 0x20 + 1, ZH
     lpm txData, Z+                      ; read flash
@@ -247,9 +279,6 @@ ReadMem:
     brne SendByte
     sbi EECR - 0x20, EERE
     in txData, EEDR - 0x20              ; read EEPROM
-#else
-    lpm txData, Z+                      ; read flash
-#endif
 SendByte:
     rcall PBTxByte
     dec pgLen
@@ -270,6 +299,8 @@ ReadWord:                               ; read 2 bytes into rxWord
     mov rxWord, rxData                  ; rxWord lo
     rjmp RxByte                         ; rxWord hi
 
+DoSPMEN:
+    ldi SpmArg, (1<<SPMEN)              ; fill page buffer
 DoSPM:
     out SPMCSR - 0x20, SpmArg
     spm
