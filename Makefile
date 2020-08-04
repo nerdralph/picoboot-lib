@@ -1,6 +1,7 @@
 MCU     ?= attiny85
 CC      = avr-gcc
-OPTIONS = -mmcu=$(MCU) -nostartfiles -Wl,--section-start=.bootloader=0x1F00
+BOOTADDR = 0x1EC0
+OPTIONS = -mmcu=$(MCU) -nostartfiles -Wl,--section-start=.bootloader=$(BOOTADDR) -DBOOTADDR=$(BOOTADDR)
 #OPTIONS += -DCLOCKSLOW
 TARGET  = pblib-$(MCU).elf
 

@@ -1,3 +1,3 @@
-Rx/Tx locations from nm
-RxByte = 0x1FCC == -0x34 == 0 - 52
-TxByte = 0x1FD6 == -0x2A == 0 - 42
+Rx/Tx locations from nm - with "pb" signature at 0x1FFE
+RxByte = 0x1FAE == -0x52 == 0 - 82 
+TxByte = 0x1FD8 == -0x28 == 0 - 40

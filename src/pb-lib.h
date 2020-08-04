@@ -14,14 +14,14 @@ void pb_lib(void)
 inline void pb_txbyte(char c)
 {
     register char ch asm("r18") = c;    // arg in r18
-    asm volatile ("rcall __vectors - 42" : "+r"(ch) :: "r19");
+    asm volatile ("rcall __vectors - 40" : "+r"(ch) :: "r19");
 }
 
 // RxByte wrapper
 inline char pb_rxbyte()
 {
     register char c asm("r23");
-    asm volatile ("rcall __vectors - 52" : "=r"(c) :: "r19");
+    asm volatile ("rcall __vectors - 82" : "=r"(c) :: "r19");
     return c;
 }
 

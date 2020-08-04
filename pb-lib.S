@@ -1,4 +1,4 @@
-/* picoboot-lib arduino compatible bootloader library
+/* pb-tiny arduino compatible bootloader for t84, t85 & t88
  * (c) Ralph Doncaster 2020 MIT license
  *
  * based on picoboot https://github.com/nerdralph/picoboot
@@ -229,19 +229,13 @@ ProgPage:
 PageFill:
     rcall ReadWord
     sbiw ZL, 0
-    brne 2f                             ; not reset vector
+    brne 1f                             ; not reset vector
     movw rstSavLo, rxWord
     ; rjmp = 1100 kkkk kkkk kkkk, k = 12-bit relative word address
     ; bit 12 of BOOTADDR is set, so it works as an offset from 0x0000
     ldi rxData, 0xC0 + ((BOOTADDR / 2) >> 8)
     ldi rxWord, ((BOOTADDR - 2) / 2) & 0xFF
-;1:  cpi ZL, EE_RDY_vect_num * 2         ; check for EE_RDY vector
-    ;cpc ZH, YL                          ; YL contains 0    
-    ;brne 2f                             ; not EE_RDY
-    ;sbiw r26, EE_RDY_vect_num           ; adjust original rjmp offset
-    ;andi r27, 0xEF                      ; mask underflow into 13th bit
-    ;movw rxWord, r26                    ; adjusted reset vector
-2:
+1:
     movw r0, rxWord                     ; data in r1:r0
     rcall DoSPMEN                       ; fill page buffer
     adiw ZL, 2                          ; increment Z one word
@@ -253,13 +247,13 @@ PageFill:
     rcall DoSPM
     ; if page == 0, save reset vector in last user page
     brne CommandFast
+    movw XL, rstSavLo                   ; save for spoofing verify
     ldi ZL, (BOOTADDR - 2) & 0xFF
     ldi ZH, (BOOTADDR - 2) >> 8
     .equ vResetOffset, (BOOTADDR - 2) / 2
+    ori rstSavHi, 0x10                  ; set for borrow from bit 12
     subi rstSavLo, vResetOffset & 0xFF
     sbci rstSavHi, vResetOffset >> 8
-    andi rstSavHi, 0x0F                 ; mask underflow out of 12th bit
-    ori rstSavHi, 0xC0                  ; rjmp instruction
     movw r0, rstSavLo
     rcall DoSPMEN                       ; fill page buffer
     ldi SpmArg, (1<<PGWRT)|(1<<SPMEN)
@@ -274,11 +268,21 @@ ReadPage:
 ReadMem:
     out EEARL - 0x20, ZL
     out EEARL - 0x20 + 1, ZH
-    lpm txData, Z+                      ; read flash
+    lpm txData, Z+                      ; read flash, inc Z
     cpi rxData, 'E'                     ; check for memtype EEPROM
-    brne SendByte
+    brne 1f                             ; memtype must be 'F'
     sbi EECR - 0x20, EERE
     in txData, EEDR - 0x20              ; read EEPROM
+    rjmp SendByte
+1:  ; do we need to spoof reset vector contents?
+    cpi ZL, 1
+    cpc ZH, YL                          ; YL == 0
+    brne SendByte
+    mov txData, XL
+    rcall PBTxByte
+    dec pgLen
+    adiw ZL, 1
+    mov txData, XH
 SendByte:
     rcall PBTxByte
     dec pgLen
@@ -288,16 +292,12 @@ Default:
     rjmp CommandLoop
 
 ; get length and flash type for write or read page
+; could alias pgLen to rxWord and save 2 instr?
 GetPageParams:
     rcall RxByte                        ; ignore block size hi byte
-    rcall ReadWord
-    mov pgLen, rxWord                   ; block size
+    rcall ReadWord                      ; block size and memtype
+    mov pgLen, rxWord
     ret
-
-ReadWord:                               ; read 2 bytes into rxWord
-    rcall RxByte
-    mov rxWord, rxData                  ; rxWord lo
-    rjmp RxByte                         ; rxWord hi
 
 DoSPMEN:
     ldi SpmArg, (1<<SPMEN)              ; fill page buffer
@@ -306,6 +306,10 @@ DoSPM:
     spm
     ret
 
+ReadWord:                               ; read 2 bytes into rxWord
+    rcall RxByte
+    mov rxWord, rxData                  ; rxWord lo
+    ; fall through to RxByte
 
 /* half-duplex bit-bang UART code */
 /* fixed timings for 57.6@8M/115.2@16M = 138.9 cycles/bit */
