@@ -70,12 +70,10 @@ Retry:
     ldi r23, 0xFF
     ldi ZL, (BOOTADDR & 0xFF)           ; bootloader start address
     ldi ZH, (BOOTADDR >> 8)
-    ;ldi SpmArg, (1<<SPMEN)              ; fill page buffer
-    ;rcall DoSPM
-    ;adiw ZL, 2                          ; increment Z pointer
     ; 1st bootloader instruction is ldi rd, osccal
-    ; opcode = 1110 KKKK dddd KKKK
+    ; patch ldi opcode = 1110 KKKK dddd KKKK
     ; tuned OSCCAL value was saved in r17
+    ; flash write performs a logical AND of new and old value
     push r17
     ori r17, 0xF0
     mov r0, r17                         ; lo byte of ldi instruction
@@ -311,8 +309,9 @@ ReadWord:                               ; read 2 bytes into rxWord
     mov rxWord, rxData                  ; rxWord lo
     ; fall through to RxByte
 
-/* half-duplex bit-bang UART code */
-/* fixed timings for 57.6@8M/115.2@16M = 138.9 cycles/bit */
+; half-duplex bit-bang UART code
+; fixed timings for 57.6@8M and 115.2@16M = 138.9 cycles/bit
+; define additional delay (multiplied by 3) for correct timing 
 .equ TXDELAY, 41
 .equ RXSTART, 64
 .equ RXDELAY, 41
@@ -328,8 +327,8 @@ RxByte:
     ldi rxData, 0x80                    ; bit shift counter
     ldi delayArg, RXSTART               ; 1.5 bit delay
 RxBit:
-    ; 7 cycle loop + ldi/delay = 7 + 7 + 3*DelayArg
-    rcall Delay3Cycle                   ; delay and clear carry
+    ; 11 cycle loop including 3 cycles for rcall
+    rcall Delay3Cycle
     rjmp .                              ; 2-cycle delay to match TxByte
     ldi delayArg, RXDELAY 
     lsr rxData
@@ -357,7 +356,7 @@ TxByte:
     in r0, UART_PORT
     sec                                 ; hold stop bit in C
 TxLoop:
-    ; 7 cycle loop + TxDelay = 7 + 7 + 3*DelayArg
+    ; 10 cycle loop including 3 cycles for rcall
     rcall TxDelay
     bst txData, 0                       ; store lsb in T
     bld r0, UART_Tx
